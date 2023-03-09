@@ -1,33 +1,69 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
-
+import (
+	"log"
+	"math/rand"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+	"time"
+)
 
 type Coordinator struct {
-	// Your definitions here.
+	mapTasks    []*Task
+	mapDone     bool
+	reduceTasks []*Task
+	reduceDone  bool
 
+	sync.RWMutex
 }
 
-// Your code here -- RPC handlers for the worker to call.
+func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	c := Coordinator{}
+	for i, file := range files {
+		task := NewMapTask(i, file)
+		c.mapTasks = append(c.mapTasks, &task)
+	}
+	for i := 0; i < nReduce; i++ {
+		task := NewReduceTask(i)
+		c.reduceTasks = append(c.reduceTasks, &task)
+	}
 
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+	c.server()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	go func() {
+		for range ticker.C {
+			if c.reduceDone {
+				return
+			}
+			now := time.Now()
+			before := now.Add(-10 * time.Second)
+			c.Lock()
+			if c.mapDone {
+				for _, task := range c.reduceTasks {
+					if task.Status == Running && task.StartTime.Before(before) {
+						task.Status = Created
+						task.StartTime = time.Time{}
+					}
+				}
+			} else {
+				for _, task := range c.mapTasks {
+					if task.Status == Running && task.StartTime.Before(before) {
+						task.Status = Created
+						task.StartTime = time.Time{}
+					}
+				}
+			}
+			c.Unlock()
+		}
+	}()
+
+	return &c
 }
 
-
-//
-// start a thread that listens for RPCs from worker.go
-//
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
@@ -41,30 +77,90 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
-//
-// main/mrcoordinator.go calls Done() periodically to find out
-// if the entire job has finished.
-//
 func (c *Coordinator) Done() bool {
-	ret := false
+	c.RLock()
+	defer c.RUnlock()
 
-	// Your code here.
-
-
-	return ret
+	return c.reduceDone
 }
 
-//
-// create a Coordinator.
-// main/mrcoordinator.go calls this function.
-// nReduce is the number of reduce tasks to use.
-//
-func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+func (c *Coordinator) Register(args *RegisterArgs, reply *RegisterReply) error {
+	id := rand.Intn(1000)
+	reply.WorkerId = id
+	reply.NReduce = len(c.reduceTasks)
+	return nil
+}
 
-	// Your code here.
+func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
+	c.Lock()
+	defer c.Unlock()
+	if c.reduceDone {
+		reply.Task = NewExitTask()
+		return nil
+	}
 
+	if c.mapDone {
+		for _, task := range c.reduceTasks {
+			if task.Status == Created {
+				task.WorkerId = args.WorkerId
+				task.StartTime = time.Now()
+				task.Status = Running
+				reply.Task = *task
+				return nil
+			}
+		}
+		reply.Task = NewWaitTask()
+		return nil
+	}
 
-	c.server()
-	return &c
+	for _, task := range c.mapTasks {
+		if task.Status == Created {
+			task.WorkerId = args.WorkerId
+			task.StartTime = time.Now()
+			task.Status = Running
+			reply.Task = *task
+			return nil
+		}
+	}
+
+	reply.Task = NewWaitTask()
+	return nil
+}
+
+func (c *Coordinator) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
+	c.Lock()
+	defer c.Unlock()
+	task := args.Task
+	switch task.Type {
+	case MapTask:
+		if c.mapTasks[task.Id].Status != Running || c.mapTasks[task.Id].WorkerId != args.WorkerId {
+			return nil
+		}
+		c.mapTasks[task.Id].Status = Completed
+		mapDone := true
+		for _, task := range c.mapTasks {
+			if task.Status != Completed {
+				mapDone = false
+				break
+			}
+		}
+		c.mapDone = mapDone
+		for i, file := range task.Files {
+			c.reduceTasks[i].Files = append(c.reduceTasks[i].Files, file)
+		}
+	case ReduceTask:
+		if c.reduceTasks[task.Id].Status != Running || c.reduceTasks[task.Id].WorkerId != args.WorkerId {
+			return nil
+		}
+		c.reduceTasks[task.Id].Status = Completed
+		reduceDone := true
+		for _, task := range c.reduceTasks {
+			if task.Status != Completed {
+				reduceDone = false
+				break
+			}
+		}
+		c.reduceDone = reduceDone
+	}
+	return nil
 }
