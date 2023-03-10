@@ -38,8 +38,8 @@ const (
 
 const (
 	MaxRetries       = 3
-	HeartbeatTimeout = 5  // 50ms
-	ElectionTimeout  = 50 // 500ms
+	HeartbeatTimeout = 10  // 100ms
+	ElectionTimeout  = 100 // 1s
 )
 
 // as each Raft peer becomes aware that successive logs entries are
@@ -160,77 +160,6 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.lastIncludedTerm = lastIncludedTerm
 }
 
-// RequestVoteArgs RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	Term         int
-	CandidateId  int
-	LastLogIndex int
-	LastLogTerm  int
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	Term        int
-	VoteGranted bool
-}
-
-// RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	reply.Term, reply.VoteGranted = rf.currentTerm, false
-
-	if args.Term < rf.currentTerm {
-		return
-	}
-
-	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
-	}
-
-	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.lastTerm() <= args.LastLogTerm && rf.lastIndex() <= args.LastLogIndex {
-		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
-
-		rf.persist()
-	}
-}
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
 // Start the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's logs. if this
 // server isn't the leader, returns false. otherwise start the
@@ -255,7 +184,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := rf.nextIndex[rf.me]
 	DPrintf("%v: start command %v at index %v", rf.me, command, index)
 
-	rf.logs = append(rf.logs, LogEntry{Term: term, Command: command})
+	rf.logs = append(rf.logs, LogEntry{Term: term, Command: command, Index: index})
 	rf.nextIndex[rf.me]++
 	rf.matchIndex[rf.me] = index
 
@@ -316,7 +245,7 @@ func (rf *Raft) tickHeartbeat() {
 	}
 
 	if rf.heartbeatElapsed >= rf.heartbeatTimeout {
-		DPrintf("%v: heartbeat timeout", rf.me)
+		rf.heartbeatElapsed = 0
 		rf.replicateLog(rf.currentTerm)
 	}
 }
@@ -336,7 +265,7 @@ func (rf *Raft) becomeCandidate() { // with mutex.Lock
 	if rf.state == Leader {
 		return
 	}
-
+	DPrintf("%v: become candidate, term: %v", rf.me, rf.currentTerm)
 	rf.state = Candidate
 	rf.reset(rf.currentTerm + 1)
 	rf.votedFor = rf.me
@@ -375,13 +304,14 @@ func (rf *Raft) becomeLeader() { // with mutex.Lock
 	if rf.state == Leader {
 		return
 	}
+	DPrintf("%v: become leader, term: %v", rf.me, rf.currentTerm)
 	rf.state = Leader
 	rf.reset(rf.currentTerm)
 	rf.tick = rf.tickHeartbeat
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	for i := range rf.nextIndex {
-		rf.nextIndex[i] = rf.firstIndex()
+		rf.nextIndex[i] = rf.lastIndex() + 1
 	}
 	rf.matchIndex = make([]int, len(rf.peers))
 
@@ -428,8 +358,6 @@ func (rf *Raft) becomeFollower(term int) { // with mutex.Lock
 	rf.state = Follower
 	rf.reset(term)
 	rf.tick = rf.tickElection
-
-	DPrintf("%v: become follower, term: %v", rf.me, rf.currentTerm)
 }
 
 func (rf *Raft) reset(term int) {
@@ -518,6 +446,7 @@ func (rf *Raft) applier() {
 			rf.mu.Lock()
 			rf.lastApplied = commitIndex
 			rf.mu.Unlock()
+			DPrintf("%v: apply logs, lastApplied: %v, commitIndex: %v", rf.me, rf.lastApplied, rf.commitIndex)
 		}
 	}
 }
@@ -560,10 +489,6 @@ func (rf *Raft) doInstallSnapshot(peer, term, retries int, args *InstallSnapshot
 	}
 }
 
-func (rf *Raft) sendInstallSnapshot(peer int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-	return rf.peers[peer].Call("Raft.InstallSnapshot", args, reply)
-}
-
 // Make the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -576,15 +501,17 @@ func (rf *Raft) sendInstallSnapshot(peer int, args *InstallSnapshotArgs, reply *
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{
-		peers:            peers,
-		persister:        persister,
-		me:               me,
-		applyCh:          applyCh,
-		appendChs:        make([]chan int, len(peers)),
-		installChs:       make([]chan int, len(peers)),
-		commitCh:         make(chan struct{}),
-		heartbeatTimeout: HeartbeatTimeout,
-		clock:            time.NewTicker(10 * time.Millisecond),
+		peers:             peers,
+		persister:         persister,
+		me:                me,
+		applyCh:           applyCh,
+		appendChs:         make([]chan int, len(peers)),
+		installChs:        make([]chan int, len(peers)),
+		commitCh:          make(chan struct{}),
+		lastIncludedIndex: 0,
+		lastIncludedTerm:  0,
+		heartbeatTimeout:  HeartbeatTimeout,
+		clock:             time.NewTicker(10 * time.Millisecond),
 	}
 	rf.becomeFollower(0)
 

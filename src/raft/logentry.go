@@ -27,6 +27,10 @@ func (rf *Raft) lastTerm() int {
 	return rf.logs[len(rf.logs)-1].Term
 }
 
+func (rf *Raft) isLogUpToDate(lastLogIndex, lastLogTerm int) bool {
+	return lastLogTerm > rf.lastTerm() || (lastLogTerm == rf.lastTerm() && lastLogIndex >= rf.lastIndex())
+}
+
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderId     int
@@ -100,7 +104,6 @@ func (rf *Raft) appendEntries(peer int, c <-chan int, term int) {
 func (rf *Raft) doAppendEntries(peer, term, retries int, args *AppendEntriesArgs) {
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(peer, args, reply)
-
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -195,6 +198,7 @@ func (rf *Raft) updateCommitIndex(term int) { // without lock held
 	}
 
 	if commitIndex > rf.commitIndex {
+		rf.commitIndex = commitIndex
 		go func() {
 			rf.commitCh <- struct{}{}
 		}()
@@ -244,9 +248,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if prevLogTerm != args.PrevLogTerm {
 		reply.ConflictTerm = prevLogTerm
-		for i := prevLogIndex; i >= rf.lastIncludedIndex; i-- {
+		for i := prevLogIndex; i > rf.lastIncludedIndex; i-- {
 			reply.ConflictIndex = i
-			if rf.logs[i-rf.lastIncludedIndex].Term != prevLogTerm {
+			if rf.logs[i-rf.lastIncludedIndex-1].Term != prevLogTerm {
 				break
 			}
 		}
@@ -278,5 +282,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	DPrintf("%d: sendAppendEntries: %d, %v", rf.me, server, args)
 	return rf.peers[server].Call("Raft.AppendEntries", args, reply)
 }

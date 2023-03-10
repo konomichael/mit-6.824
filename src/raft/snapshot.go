@@ -124,3 +124,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	rf.saveStateAndSnapshot(snapshot)
 }
+
+func (rf *Raft) sendInstallSnapshot(peer int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	DPrintf("sendInstallSnapshot: %v -> %v", rf.me, peer)
+	return rf.peers[peer].Call("Raft.InstallSnapshot", args, reply)
+}
