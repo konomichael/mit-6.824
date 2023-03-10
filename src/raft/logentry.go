@@ -268,17 +268,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
-	rf.persist()
-
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = args.LeaderCommit
-		if rf.lastIndex() > rf.commitIndex {
+		if rf.lastIndex() < rf.commitIndex {
 			rf.commitIndex = rf.lastIndex()
 		}
 		go func() {
 			rf.commitCh <- struct{}{}
 		}()
 	}
+
+	rf.persist() // persist after update commitIndex
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {

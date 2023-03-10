@@ -51,9 +51,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 
-	// accept snapshot
-	rf.saveStateAndSnapshot(args.Data)
-
 	// |rf.lastIncludedIndex| rf.logs[0]|rf.logs[1]|...|rf.logs[n]|
 	//                                   args.LastIncludedIndex
 	entries := make([]LogEntry, len(rf.logs)-args.LastIncludedIndex+rf.lastIncludedIndex)
@@ -64,6 +61,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.lastIncludedTerm = args.LastIncludedTerm
 	rf.lastApplied = args.LastIncludedIndex
 	rf.commitIndex = args.LastIncludedIndex
+
+	// accept snapshot
+	rf.saveStateAndSnapshot(args.Data)
 
 	applyMsg := ApplyMsg{
 		CommandValid:  false,

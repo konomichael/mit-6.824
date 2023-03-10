@@ -38,8 +38,8 @@ const (
 
 const (
 	MaxRetries       = 3
-	HeartbeatTimeout = 10  // 100ms
-	ElectionTimeout  = 100 // 1s
+	HeartbeatTimeout = 5  // 50ms
+	ElectionTimeout  = 50 // 500ms
 )
 
 // as each Raft peer becomes aware that successive logs entries are
@@ -452,7 +452,7 @@ func (rf *Raft) applier() {
 }
 
 func (rf *Raft) saveStateAndSnapshot(snapshot []byte) {
-	if data := rf.persister.ReadRaftState(); len(data) > 0 {
+	if data := rf.persistentState(); len(data) > 0 {
 		rf.persister.Save(data, snapshot)
 	}
 }
