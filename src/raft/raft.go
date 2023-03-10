@@ -92,7 +92,7 @@ type Raft struct {
 	appendChs  []chan int // for each peer, a channel to notify the peer to append logs, the value is retry count
 	installChs []chan int // for each peer, a channel to notify the peer to install snapshot, the value is retry count
 
-	commitCh chan struct{}
+	commitCh chan bool
 
 	tick func()
 
@@ -211,7 +211,9 @@ func (rf *Raft) Kill() {
 
 	rf.clock.Stop()
 
-	close(rf.commitCh)
+	if rf.commitCh != nil {
+		close(rf.commitCh)
+	}
 	rf.commitCh = nil
 }
 
@@ -414,10 +416,10 @@ func (rf *Raft) replicateLog(term int) { // without mutex.Lock
 }
 
 // applier applies committed log entries to the state machine when commitIndex > lastApplied
-func (rf *Raft) applier() {
+func (rf *Raft) applier(commitCh chan bool) {
 	for {
 		select {
-		case _, ok := <-rf.commitCh:
+		case isCommit, ok := <-rf.commitCh:
 			if !ok {
 				return // channel closed
 			}
@@ -426,6 +428,27 @@ func (rf *Raft) applier() {
 			}
 
 			rf.mu.Lock()
+
+			if !isCommit {
+				rf.commitCh = commitCh
+				data := rf.persister.ReadSnapshot()
+				if len(data) > 0 {
+					applyMsg := ApplyMsg{
+						CommandValid:  false,
+						SnapshotValid: true,
+						Snapshot:      data,
+						SnapshotTerm:  rf.lastIncludedTerm,
+						SnapshotIndex: rf.lastIncludedIndex,
+					}
+
+					rf.mu.Unlock()
+					rf.applyCh <- applyMsg
+					continue
+				}
+				rf.mu.Unlock()
+				continue
+			}
+
 			firstIndex, commitIndex, lastApplied := rf.firstIndex(), rf.commitIndex, rf.lastApplied
 			// check again
 			if commitIndex <= lastApplied {
@@ -461,8 +484,8 @@ func (rf *Raft) doInstallSnapshot(peer, term, retries int, args *InstallSnapshot
 	reply := &InstallSnapshotReply{}
 	ok := rf.sendInstallSnapshot(peer, args, reply)
 
-	rf.mu.Unlock()
-	defer rf.mu.Lock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if rf.state != Leader || rf.killed() || rf.currentTerm != term {
 		return
@@ -507,7 +530,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		applyCh:           applyCh,
 		appendChs:         make([]chan int, len(peers)),
 		installChs:        make([]chan int, len(peers)),
-		commitCh:          make(chan struct{}),
+		commitCh:          make(chan bool, 1),
 		lastIncludedIndex: 0,
 		lastIncludedTerm:  0,
 		heartbeatTimeout:  HeartbeatTimeout,
@@ -523,7 +546,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-	go rf.applier()
+	go rf.applier(rf.commitCh)
 
 	return rf
 }

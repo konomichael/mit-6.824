@@ -200,7 +200,7 @@ func (rf *Raft) updateCommitIndex(term int) { // without lock held
 	if commitIndex > rf.commitIndex {
 		rf.commitIndex = commitIndex
 		go func() {
-			rf.commitCh <- struct{}{}
+			rf.commitCh <- true
 		}()
 	}
 }
@@ -274,7 +274,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.commitIndex = rf.lastIndex()
 		}
 		go func() {
-			rf.commitCh <- struct{}{}
+			rf.commitCh <- true
 		}()
 	}
 
@@ -282,6 +282,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	DPrintf("%d: sendAppendEntries: %d, %v", rf.me, server, args)
+	defer DPrintf("%d: sendAppendEntries: %d, %v, %v", rf.me, server, args, reply)
 	return rf.peers[server].Call("Raft.AppendEntries", args, reply)
 }

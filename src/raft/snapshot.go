@@ -34,11 +34,11 @@ func (rf *Raft) buildInstallSnapshotArgs() *InstallSnapshotArgs {
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
 
 	if args.Term < rf.currentTerm {
-		rf.mu.Unlock()
 		return
 	}
 
@@ -47,15 +47,21 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	if args.LastIncludedIndex <= rf.commitIndex {
-		rf.mu.Unlock()
 		return
 	}
 
 	// |rf.lastIncludedIndex| rf.logs[0]|rf.logs[1]|...|rf.logs[n]|
 	//                                   args.LastIncludedIndex
-	entries := make([]LogEntry, len(rf.logs)-args.LastIncludedIndex+rf.lastIncludedIndex)
-	copy(entries, rf.logs[args.LastIncludedIndex-rf.lastIncludedIndex:])
-	rf.logs = entries // for garbage collection
+	var entries []LogEntry
+	for i := range rf.logs {
+		if rf.logs[i].Index == args.LastIncludedIndex && rf.logs[i].Term == args.LastIncludedTerm {
+			entries = rf.logs[i+1:]
+			break
+		}
+	}
+
+	rf.logs = make([]LogEntry, len(entries))
+	copy(rf.logs, entries) // for garbage collection
 
 	rf.lastIncludedIndex = args.LastIncludedIndex
 	rf.lastIncludedTerm = args.LastIncludedTerm
@@ -65,16 +71,16 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	// accept snapshot
 	rf.saveStateAndSnapshot(args.Data)
 
-	applyMsg := ApplyMsg{
-		CommandValid:  false,
-		SnapshotValid: true,
-		Snapshot:      args.Data,
-		SnapshotTerm:  args.LastIncludedTerm,
-		SnapshotIndex: args.LastIncludedIndex,
-	}
-	rf.mu.Unlock()
 	// keep a mind that we should not hold the lock when calling rf.applyCh <- applyMsg
-	rf.applyCh <- applyMsg
+	DPrintf("apply snapshot, lastApplied: %v, commitIndex: %v", rf.lastApplied, rf.commitIndex)
+
+	if rf.commitCh != nil {
+		go func(ch chan<- bool) {
+			ch <- false
+		}(rf.commitCh)
+
+		rf.commitCh = nil
+	}
 }
 
 // leader calls this function to send InstallSnapshot RPC to follower
@@ -117,6 +123,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		return
 	}
 
+	rf.lastIncludedTerm = rf.logs[index-rf.lastIncludedIndex-1].Term
 	entries := make([]LogEntry, len(rf.logs)-index+rf.lastIncludedIndex)
 	copy(entries, rf.logs[index-rf.lastIncludedIndex:])
 	rf.logs = entries // for garbage collection
@@ -126,6 +133,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 func (rf *Raft) sendInstallSnapshot(peer int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-	DPrintf("sendInstallSnapshot: %v -> %v", rf.me, peer)
+	defer DPrintf("sendInstallSnapshot: %v -> %v, lastIncludedIndex: %v,", rf.me, peer, args.LastIncludedIndex)
 	return rf.peers[peer].Call("Raft.InstallSnapshot", args, reply)
 }
