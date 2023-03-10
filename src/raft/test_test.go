@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -796,11 +798,11 @@ func TestPersist32C(t *testing.T) {
 
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
 // iteration asks a leader, if there is one, to insert a command in the Raft
-// log.  If there is a leader, that leader will fail quickly with a high
+// logs.  If there is a leader, that leader will fail quickly with a high
 // probability (perhaps without committing the command), or crash after a while
 // with low probability (most likey committing the command).  If the number of
 // alive servers isn't enough to form a majority, perhaps start a new server.
-// The leader in a new term may try to finish replicating log entries that
+// The leader in a new term may try to finish replicating logs entries that
 // haven't been committed yet.
 func TestFigure82C(t *testing.T) {
 	servers := 5
@@ -1184,7 +1186,7 @@ func TestSnapshotInstallUnCrash2D(t *testing.T) {
 
 // do the servers persist the snapshots, and
 // restart using snapshot along with the
-// tail of the log?
+// tail of the logs?
 func TestSnapshotAllCrash2D(t *testing.T) {
 	servers := 3
 	iters := 5
